@@ -1,0 +1,48 @@
+# Python virtual environment
+venv/
+env/
+.venv/
+ENV/
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Executables & large binaries
+cloudflared.exe
+*.exe
+
+# Databases & runtime logs
+users.db
+logs.txt
+*.log
+
+# Runtime state data generated during execution
+hash_chain.json
+hash_state.json
+
+# Secrets and credentials
+twilio_secrets.json
+.env
+.env.*
+!.env.example
+
+# Node.js & Hardhat artifacts
+node_modules/
+blockchain/node_modules/
+blockchain/artifacts/
+blockchain/cache/
+blockchain/dist/
+blockchain/typechain/
+blockchain/typechain-types/
+dist/
+coverage/
+
+# OS and Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
