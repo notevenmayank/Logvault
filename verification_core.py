@@ -11,7 +11,7 @@ import threading
 from web3 import Web3
 import ollama_explainer
 
-RPC_URL = "http://127.0.0.1:8545"
+RPC_URL = os.environ.get("BLOCKCHAIN_RPC_URL", "http://127.0.0.1:8545")
 ARTIFACT_PATH = os.path.join("blockchain", "artifacts", "contracts", "LogVault.sol", "LogVault.json")
 ADDRESS_PATH = os.path.join("blockchain", "contract_address.txt")
 CHAIN_FILE = "hash_chain.json"
@@ -89,23 +89,30 @@ def find_tampered_lines(current_lines, stored_line_hashes, window_start_position
 
 
 def get_contract():
-    """Connects to the local blockchain and returns a ready-to-use contract object,
-    or None (with a reason) if the chain or contract isn't available yet."""
+    """Connects to the blockchain and returns a ready-to-use contract object,
+    or None (with a reason) if the chain or contract isn't available."""
     if not os.path.exists(ADDRESS_PATH):
-        return None, "Contract not deployed yet. Run: python blockchain/deploy.py"
+        return None, "Contract not deployed yet. On-chain features unavailable."
 
-    w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    if not w3.is_connected():
-        return None, "Cannot reach local blockchain at " + RPC_URL + ". Run: npx hardhat node"
+    if not os.path.exists(ARTIFACT_PATH):
+        return None, "Blockchain artifacts not found. On-chain features unavailable."
 
-    with open(ADDRESS_PATH, "r") as f:
-        contract_address = f.read().strip()
+    try:
+        # Bounded 1.5s timeout so verification never hangs on deployed servers (e.g. Render)
+        w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 1.5}))
+        if not w3.is_connected():
+            return None, "Cannot reach blockchain at " + RPC_URL + ". On-chain features unavailable."
 
-    with open(ARTIFACT_PATH, "r") as f:
-        artifact = json.load(f)
+        with open(ADDRESS_PATH, "r") as f:
+            contract_address = f.read().strip()
 
-    contract = w3.eth.contract(address=contract_address, abi=artifact["abi"])
-    return contract, None
+        with open(ARTIFACT_PATH, "r") as f:
+            artifact = json.load(f)
+
+        contract = w3.eth.contract(address=contract_address, abi=artifact["abi"])
+        return contract, None
+    except Exception as e:
+        return None, f"Blockchain RPC unreachable ({e}). On-chain features unavailable."
 
 
 def get_all_window_statuses():
@@ -185,17 +192,25 @@ def get_all_window_statuses():
             results.append(row)
             continue
 
-        onchain_hash, onchain_prev, onchain_ts, onchain_lines, exists = contract.functions.getWindow(window_id).call()
+        try:
+            onchain_hash, onchain_prev, onchain_ts, onchain_lines, exists = contract.functions.getWindow(window_id).call()
+            row["source"] = "blockchain"
 
-        row["source"] = "blockchain"
-
-        if not exists:
+            if not exists:
+                row["onchain_hash"] = None
+                row["status"] = "NOT_ON_CHAIN"
+            else:
+                onchain_hash_hex = onchain_hash.hex()
+                row["onchain_hash"] = onchain_hash_hex
+                row["status"] = "INTACT" if recomputed_hex == onchain_hash_hex else "TAMPERED"
+                if row["status"] == "TAMPERED":
+                    row["tampered_lines"] = find_tampered_lines(window_lines, entry.get("line_hashes"), window_start_position)
+        except Exception as e:
+            # RPC call failed during execution: fallback to local verification
+            local_hash = entry.get("window_hash")
             row["onchain_hash"] = None
-            row["status"] = "NOT_ON_CHAIN"
-        else:
-            onchain_hash_hex = onchain_hash.hex()
-            row["onchain_hash"] = onchain_hash_hex
-            row["status"] = "INTACT" if recomputed_hex == onchain_hash_hex else "TAMPERED"
+            row["source"] = "local_file_only"
+            row["status"] = "INTACT" if recomputed_hex == local_hash else "TAMPERED"
             if row["status"] == "TAMPERED":
                 row["tampered_lines"] = find_tampered_lines(window_lines, entry.get("line_hashes"), window_start_position)
 
@@ -213,18 +228,21 @@ def get_all_window_statuses():
             if probe_id in local_window_ids:
                 continue
 
-            onchain_hash, onchain_prev, onchain_ts, onchain_lines, exists = contract.functions.getWindow(probe_id).call()
+            try:
+                onchain_hash, onchain_prev, onchain_ts, onchain_lines, exists = contract.functions.getWindow(probe_id).call()
 
-            if exists:
-                results.append({
-                    "window_id": probe_id,
-                    "timestamp": None,
-                    "num_lines": onchain_lines,
-                    "recomputed_hash": None,
-                    "onchain_hash": onchain_hash.hex(),
-                    "source": "blockchain",
-                    "status": "MISSING",
-                })
+                if exists:
+                    results.append({
+                        "window_id": probe_id,
+                        "timestamp": None,
+                        "num_lines": onchain_lines,
+                        "recomputed_hash": None,
+                        "onchain_hash": onchain_hash.hex(),
+                        "source": "blockchain",
+                        "status": "MISSING",
+                    })
+            except Exception:
+                break
 
     results.sort(key=lambda r: r["window_id"])
 

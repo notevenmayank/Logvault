@@ -1,4 +1,4 @@
-﻿"""
+"""
 Sentinel Vault Dashboard â€” a small Flask app that shows every log window's
 integrity status (Intact / Tampered / Missing / Not on chain) live, by
 calling the same verification logic used by the command-line tool.
@@ -23,15 +23,25 @@ _alerted_window_ids = set()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "sentinel-vault-secret-key-super-secure-2026")
+
+# CORS and Cookie configuration:
+# Read ALLOWED_ORIGIN (e.g. "https://sentinel-landing.vercel.app,http://localhost:5173"), falling back to "*"
+allowed_origins_env = os.environ.get("ALLOWED_ORIGIN", "").strip()
+if allowed_origins_env:
+    allowed_origins = [orig.strip() for orig in allowed_origins_env.split(",") if orig.strip()]
+else:
+    allowed_origins = "*"
+
+# In cross-origin deployments (e.g. Vercel frontend calling Render backend),
+# cookies must use SameSite="None" and Secure=True so credentials flow across domains.
+is_cross_origin = bool(os.environ.get("RENDER") or (allowed_origins_env and allowed_origins_env != "*"))
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=False,
+    SESSION_COOKIE_SAMESITE="None" if is_cross_origin else "Lax",
+    SESSION_COOKIE_SECURE=True if is_cross_origin else False,
 )
 
-# Allows the separate React/Vite landing page (localhost:5173 during dev)
-# to call these /api/* endpoints with session credentials
-CORS(app, resources={r"/api/*": {"origins": "*", "supports_credentials": True}})
+CORS(app, resources={r"/api/*": {"origins": allowed_origins, "supports_credentials": True}})
 app.register_blueprint(auth_bp)
 
 
@@ -141,6 +151,9 @@ def api_simulate_attack():
 
     target = intact_windows[-1]
     window_id = target["window_id"]
+
+    if not os.path.exists(verification_core.CHAIN_FILE) or not os.path.exists(verification_core.LOG_FILE):
+        return jsonify({"success": False, "message": "No local logs or chain file found to simulate attack."})
 
     with open(verification_core.CHAIN_FILE, "r") as f:
         chain = json.load(f)
@@ -265,6 +278,9 @@ def api_simulate_missing():
             "message": "No anchored, intact window is eligible yet. Wait for a few more windows to be hashed and anchored, then try again."
         })
 
+    if not os.path.exists(verification_core.CHAIN_FILE) or not os.path.exists(verification_core.LOG_FILE):
+        return jsonify({"success": False, "message": "No local logs or chain file found to simulate attack."})
+
     with open(verification_core.CHAIN_FILE, "r") as f:
         chain = json.load(f)
 
@@ -297,9 +313,6 @@ def api_simulate_missing():
 
 
 if __name__ == "__main__":
-    # threaded=True: without this, one slow request (e.g. simulate-attack
-    # waiting on a local AI explanation) blocks every other request -- the
-    # whole dashboard freezes until it finishes, which looks like windows
-    # have "disappeared" if you refresh mid-attack.
-    app.run(debug=True, port=5000, threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True, threaded=True)
 

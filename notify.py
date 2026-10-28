@@ -20,25 +20,9 @@ import json
 import os
 import urllib.request
 
-# ---- Push notification (ntfy.sh) ----
-# Pick your own topic name here -- anything unique. Then install the ntfy
-# app (Android/iOS/web: https://ntfy.sh/app) and subscribe to this exact
-# topic name to get the alert on your phone.
-NTFY_TOPIC = "sentinel-vault-vaibhav-5c603c7cc1"
-
-# ---- Phone call (Twilio) ----
-# Fill these in after creating a free Twilio trial account:
-#   1. Sign up at https://www.twilio.com/try-twilio
-#   2. From the console dashboard, copy your Account SID and Auth Token
-#   3. Get a free Twilio phone number (Phone Numbers -> Buy a number)
-#   4. On a trial account you can only call a number YOU verified in the
-#      console (Phone Numbers -> Verified Caller IDs) -- verify your own
-#      phone there first.
 def _load_twilio_secrets():
     """Reads Twilio credentials from twilio_secrets.json if present
-    (gitignored, lives next to this file), falling back to environment
-    variables. Local file is just easier to edit by hand than setting
-    env vars every time you open a new terminal."""
+    (gitignored, lives next to this file) as a local-dev fallback."""
     secrets = {}
     secrets_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "twilio_secrets.json")
     if os.path.exists(secrets_path):
@@ -52,32 +36,26 @@ def _load_twilio_secrets():
 
 _twilio_secrets = _load_twilio_secrets()
 
+# Read configurations: Environment variables take priority over local twilio_secrets.json
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC") or _twilio_secrets.get("NTFY_TOPIC", "sentinel-vault-vaibhav-5c603c7cc1")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID") or _twilio_secrets.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN") or _twilio_secrets.get("TWILIO_AUTH_TOKEN", "")
-TWILIO_FROM_NUMBER = os.environ.get("TWILIO_FROM_NUMBER") or _twilio_secrets.get("TWILIO_FROM_NUMBER", "")   # the Twilio number you were given, e.g. +1415XXXXXXX
-TWILIO_TO_NUMBER = os.environ.get("TWILIO_TO_NUMBER") or _twilio_secrets.get("TWILIO_TO_NUMBER", "")       # YOUR phone, e.g. +9198XXXXXXXX
-
-# Trial Twilio accounts reject inline TwiML (the "twiml" param) on
-# calls.create -- "Invalid or disallowed parameters provided". The fix
-# that actually works on trial is to pass "url" pointing at a page that
-# RETURNS TwiML, which Twilio's servers fetch over the public internet.
-# dashboard_app.py exposes exactly that at /twiml/alert, but it's only
-# reachable at localhost:5000, so Twilio can't fetch it directly -- this
-# needs a public tunnel (e.g. `npx localtunnel --port 5000`) pointed at
-# it. Put that tunnel's https URL here (no trailing slash).
+TWILIO_FROM_NUMBER = os.environ.get("TWILIO_FROM_NUMBER") or _twilio_secrets.get("TWILIO_FROM_NUMBER", "")
+TWILIO_TO_NUMBER = os.environ.get("TWILIO_TO_NUMBER") or _twilio_secrets.get("TWILIO_TO_NUMBER", "")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL") or _twilio_secrets.get("PUBLIC_BASE_URL", "")
 
 
 def send_push_notification(window_id, status):
     """Best-effort -- never raises, so a notification failure can't break
     the dashboard."""
-    if not NTFY_TOPIC or "change-me" in NTFY_TOPIC:
+    topic = os.environ.get("NTFY_TOPIC") or NTFY_TOPIC
+    if not topic or "change-me" in topic:
         return
     try:
         title = f"Sentinel Vault: Window {window_id} {status}"
         body = f"Log window {window_id} just flipped to {status}. Check the dashboard."
         req = urllib.request.Request(
-            f"https://ntfy.sh/{NTFY_TOPIC}",
+            f"https://ntfy.sh/{topic}",
             data=body.encode("utf-8"),
             headers={
                 "Title": title,
@@ -93,19 +71,25 @@ def send_push_notification(window_id, status):
 
 def send_phone_call(window_id, status):
     """Best-effort -- never raises. Skips silently if Twilio or the
-    public tunnel URL isn't configured yet."""
-    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER and TWILIO_TO_NUMBER):
+    public tunnel URL isn't configured."""
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID") or TWILIO_ACCOUNT_SID
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN") or TWILIO_AUTH_TOKEN
+    from_number = os.environ.get("TWILIO_FROM_NUMBER") or TWILIO_FROM_NUMBER
+    to_number = os.environ.get("TWILIO_TO_NUMBER") or TWILIO_TO_NUMBER
+    public_url = os.environ.get("PUBLIC_BASE_URL") or PUBLIC_BASE_URL
+
+    if not (account_sid and auth_token and from_number and to_number):
         return
-    if not PUBLIC_BASE_URL:
-        print("[notify] phone call skipped: PUBLIC_BASE_URL not set in twilio_secrets.json (run a tunnel, e.g. `npx localtunnel --port 5000`, and put its https URL there)")
+    if not public_url:
+        print("[notify] phone call skipped: PUBLIC_BASE_URL not set in environment or twilio_secrets.json")
         return
     try:
         from twilio.rest import Client
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        twiml_url = f"{PUBLIC_BASE_URL}/twiml/alert?window_id={window_id}&status={status}"
+        client = Client(account_sid, auth_token)
+        twiml_url = f"{public_url.rstrip('/')}/twiml/alert?window_id={window_id}&status={status}"
         client.calls.create(
-            to=TWILIO_TO_NUMBER,
-            from_=TWILIO_FROM_NUMBER,
+            to=to_number,
+            from_=from_number,
             url=twiml_url,
         )
     except Exception as e:
